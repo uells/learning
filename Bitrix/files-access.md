@@ -30,6 +30,11 @@
 - [2. Задача](#2-задача)
 - [3. Решения](#3-решения)
   - [3.1. Защищённая отдача файлов через сервер (PHP)](#31-защищённая-отдача-файлов-через-сервер-php)
+  - [3.2. Nginx + X-Accel-Redirect](#32-nginx--x-accel-redirect)
+    - [Сравнительная таблица](#сравнительная-таблица)
+- [4. Термины](#4-термины)
+  - [4.1. PHP-FPM](#41-php-fpm)
+  - [4.2. X-Accel-Redirect](#42-x-accel-redirect)
    
 ###  3.1. Защищённая отдача файлов через сервер (PHP)
 
@@ -42,11 +47,124 @@
 
 Таким образом, файл невозможно получить по прямой ссылке, даже при знании его физического расположения на сервере.
 
+PS Вариант сработает, также если ограничить доступ к папке в web-root с помощью конфигурации nginx или apache
+```nginx
+location /upload/private/ {
+    deny all;
+}
+```
+
+
 ```mermaid
-flowchart TD
-    A[Пользователь] --> B[Ссылка на сайте<br>/download.php?id=123]
-    B --> C[PHP-скрипт<br>(web-root)]
-    C --> D{Авторизован?}
-    D -- Нет --> E[403 / Отказ]
-    D -- Да --> F[Файл вне web-root]
-    F --> C --> A
+flowchart LR
+    User[Пользователь] --> index[index.php<br>example.pdf]
+    subgraph web-root
+        index --> script[PHP-script]
+    end
+    subgraph вне web-root
+        file[example.pdf]
+    end
+    script-- Авторизован --> file
+    script-- Неавторизован --> error[Ошибка доступа] --> User
+    file-- Трансляция файла --> script--Трансляция файла -->User
+```
+
+Вариант реализации PHP-скрипта от GPT 5.2
+```PHP
+<?php
+define("NO_KEEP_STATISTIC", true);
+define("NO_AGENT_STATISTIC", true);
+define("NOT_CHECK_PERMISSIONS", true);
+require($_SERVER["DOCUMENT_ROOT"]."/bitrix/modules/main/include/prolog_before.php");
+
+global $USER;
+
+if (!$USER->IsAuthorized()) {
+    \CHTTP::SetStatus("403 Forbidden");
+    exit("Access denied");
+}
+
+$id = (int)($_GET['id'] ?? 0);
+$path = "/home/bitrix/files/private/contract_{$id}.pdf"; // пример
+
+if (!is_file($path)) {
+    \CHTTP::SetStatus("404 Not Found");
+    exit("Not found");
+}
+
+header('Content-Type: application/pdf');
+header('Content-Disposition: attachment; filename="contract_'.$id.'.pdf"');
+header('Content-Length: '.filesize($path));
+
+readfile($path);
+exit;
+```
+
+### 3.2. Nginx + X-Accel-Redirect
+
+[Вопрос на хабр](https://qna.habr.com/q/578878)
+
+Предыдущий метод может работать медленно, поскольку передача каждого файла осуществляется через PHP, что создаёт дополнительную нагрузку на [PHP-FPM](#41-php-fpm) и снижает производительность при работе с большими файлами. Эту проблему можно решить, передав ответственность за отдачу файлов веб-серверу Nginx.
+
+Для этого используется специальный HTTP-заголовок [`X-Accel-Redirect`](#42-x-accel-redirect)— нестандартный механизм Nginx, предназначенный для внутреннего перенаправления запроса на файл. Суть метода заключается в том, что каталог с файлами объявляется внутренним (`internal`) на уровне конфигурации Nginx, поэтому прямой доступ к нему по URL невозможен. PHP-скрипт выполняет проверку авторизации и прав доступа пользователя и, в случае успешной проверки, возвращает заголовок [`X-Accel-Redirect`](#42-x-accel-redirect), указывающий Nginx, какой файл необходимо передать клиенту. Сам файл при этом читается и отдаётся напрямую Nginx, без участия PHP.
+
+Таким образом, доступ к файлам по их фактическому расположению на сервере ограничен, а скорость передачи данных существенно выше по сравнению с вариантом, при котором файл читается и передаётся через PHP.
+
+Настройка конфигурации nginx
+```nginx
+location /protected_internal/ {
+    internal;
+    alias /home/site/protected/docs/;
+}
+```
+Вариант реализации PHP-скрипта от GPT 5.2
+```PHP
+<?php
+require($_SERVER['DOCUMENT_ROOT'].'/bitrix/modules/main/include/prolog_before.php');
+
+use Bitrix\Main\Context;
+
+global $USER;
+
+if (!$USER->IsAuthorized()) {
+    http_response_code(403);
+    exit;
+}
+
+// пример проверки прав
+if (!\Bitrix\Main\Loader::includeModule('iblock')) {
+    http_response_code(500);
+    exit;
+}
+
+// допустим, получили путь из БД
+$realPath = '/home/site/protected/docs/contract.pdf';
+
+// базовая защита
+if (!file_exists($realPath)) {
+    http_response_code(404);
+    exit;
+}
+
+// важно: путь ТОЛЬКО относительный к internal
+$internalPath = '/internal_files/docs/contract.pdf';
+
+header('Content-Type: application/pdf');
+header('Content-Disposition: inline; filename="contract.pdf"');
+header('X-Accel-Redirect: ' . $internalPath);
+exit;
+```
+#### Сравнительная таблица
+
+| Подход | Плюсы | Минусы |
+|------|------|-------|
+| **PHP-отдача файлов** | Простая реализация без настройки веб-сервера<br> работает на любом хостинге<br> полный контроль логики в PHP<br> легко интегрируется с бизнес-логикой 1С-Битрикс | Низкая производительность на больших файлах<br> высокая нагрузка на PHP-FPM<br> каждый файл занимает PHP-процесс на всё время передачи<br> плохо масштабируется при большом числе скачиваний |
+| **Nginx + X-Accel-Redirect** | Высокая скорость передачи<br> минимальная нагрузка на PHP-FPM<br> надёжная защита от прямого доступа<br> хорошо масштабируется<br> поддержка больших файлов и Range-запросов<br> production-решение | Требует Nginx<br> необходим доступ к конфигурации сервера<br> сложнее в настройке<br> ошибки в `internal`/`alias` могут привести к проблемам безопасности |
+
+## 4. Термины
+
+### 4.1. PHP-FPM
+**PHP-FPM** (FastCGI Process Manager) — это высокопроизводительный менеджер процессов для PHP, используемый для обработки динамического контента на веб-серверах (чаще всего с Nginx)
+
+### 4.2. X-Accel-Redirect
+**X-Accel-Redirect** — это механизм в веб-сервере Nginx, позволяющий бэкенду (PHP, Python и др.) переложить задачу отдачи файла на сам Nginx, сохранив при этом контроль над авторизацией
