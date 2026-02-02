@@ -120,9 +120,9 @@ location /protected_internal/ {
 Схема взаимодействия:
 ```mermaid
 flowchart LR
-    User[Пользователь] --> index[**index.php**:<br>ссылка файл: href=file_id.pdf]
+    User[Пользователь] --> index[**index.php**:<br>ссылка на скрипт: href=/php-script/file_id.pdf]
     subgraph web-root
-        index --> script[PHP-script:<br>-проверяет права доступа<br>-генерирует истинный путь к файлу: /private_folfer/pdf/ + file_id + .pdf<br><br>Отправляет заголовок X-senddile -> apache отдает файл авторизованному пользователю]
+        index --> script[PHP-script:<br>-проверяет права доступа<br>-генерирует истинный путь к файлу: /private_folfer/pdf/ + file_id + .pdf<br><br>Отправляет заголовок X-sendfile -> apache отдает файл авторизованному пользователю]
     end
     subgraph защищенная папка /private_folfer/pdf/
         file[file_id.pdf]
