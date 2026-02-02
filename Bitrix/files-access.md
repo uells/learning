@@ -117,6 +117,21 @@ location /protected_internal/ {
     alias /home/site/protected/docs/;
 }
 ```
+Схема взаимодействия:
+```mermaid
+flowchart LR
+    User[Пользователь] --> index[**index.php**:<br>ссылка файл: href=file_id.pdf]
+    subgraph web-root
+        index --> script[PHP-script:<br>-проверяет права доступа<br>-генерирует истинный путь к файлу: /private_folfer/pdf/ + file_id + .pdf<br><br>Отправляет заголовок X-senddile -> apache отдает файл авторизованному пользователю]
+    end
+    subgraph защищенная папка /private_folfer/pdf/
+        file[file_id.pdf]
+    end
+    script-- Авторизован --> file
+    script-- Неавторизован --> error[Ошибка доступа] --> User
+    file-- Трансляция файла --> script--Трансляция файла -->User
+```
+
 Вариант реализации PHP-скрипта от GPT 5.2
 ```PHP
 <?php
@@ -168,3 +183,17 @@ exit;
 
 ### 4.2. X-Accel-Redirect
 **X-Accel-Redirect** — это механизм в веб-сервере Nginx, позволяющий бэкенду (PHP, Python и др.) переложить задачу отдачи файла на сам Nginx, сохранив при этом контроль над авторизацией
+
+```mermaid
+flowchart LR
+    User[Пользователь] --> index[**index.php**:<br>ссылка файл: href=file_id.pdf]
+    subgraph web-root
+        index --> script[PHP-script:<br>-проверяет права доступа<br>-генерирует истинный путь к файлу: /private_folfer/pdf/ + file_id + .pdf<br><br>Отправляет заголовок X-senddile -> apache отдает файл авторизованному пользователю]
+    end
+    subgraph защищенная папка /private_folfer/pdf/
+        file[file_id.pdf]
+    end
+    script-- Авторизован --> file
+    script-- Неавторизован --> error[Ошибка доступа] --> User
+    file-- Трансляция файла --> script--Трансляция файла -->User
+```
